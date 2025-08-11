@@ -164,3 +164,18 @@ python3 generation.py \
 --seed 12345 \
 --out_path generation.wav
 ```
+
+## Thai training (GigaSpeech2)
+
+1) Accept access to `speechcolab/gigaspeech2` and set env `HUGGINGFACE_TOKEN`.
+2) Prepare Thai data:
+
+```bash
+python tools/prepare_gigaspeech2_thai.py --output_dir ./higgs_training_data_th --split train_refined --max_samples 5000 --resample_to 16000
+```
+
+3) Run LoRA training (RunPod-friendly):
+
+```bash
+python trainer/run_thai_lora.py --model_path /path/to/model --audio_tokenizer_path /path/to/tokenizer --data_dir ./higgs_training_data_th --output_dir ./out_th --epochs 1 --batch_size 1 --lr 5e-5 --fp16
+```

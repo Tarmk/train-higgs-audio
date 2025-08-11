@@ -9,6 +9,7 @@ torchvision
 torchaudio
 json_repair
 pandas
+datasets>=2.20.0
 pydantic
 vector_quantize_pytorch
 loguru

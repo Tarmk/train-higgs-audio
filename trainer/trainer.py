@@ -343,8 +343,9 @@ class HiggsAudioDataset(Dataset):
             return None
 
     def _normalize_transcript(self, transcript: str) -> str:
-        """Normalize transcript text"""
+        """Normalize transcript text. Keep Thai letters intact."""
         transcript = normalize_chinese_punctuation(transcript)
+        # Avoid stripping Thai characters; only handle ASCII punctuation and units
         transcript = transcript.replace("(", " ").replace(")", " ")
         transcript = transcript.replace("°F", " degrees Fahrenheit").replace("°C", " degrees Celsius")
         
@@ -694,7 +695,8 @@ def main():
         logger.warning("Audio tokenizer not available, using fallback")
     
     # Load model
-    model = HiggsAudioModelWrapper(args.model_path, device='cuda', args=args)
+    runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = HiggsAudioModelWrapper(args.model_path, device=runtime_device, args=args)
     
     # Setup LoRA
     if args.use_lora:

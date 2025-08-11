@@ -497,7 +497,7 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
     "--transcript",
     type=str,
     default="transcript/single_speaker/en_dl.txt",
-    help="The prompt to use for generation. If not set, we will use a default prompt.",
+    help="The prompt to use for generation. Thai text is supported if the model is fine-tuned.",
 )
 @click.option(
     "--scene_prompt",
