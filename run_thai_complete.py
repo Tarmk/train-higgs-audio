@@ -42,9 +42,12 @@ try:
     from huggingface_hub import hf_hub_download, login
     from datasets import load_dataset
     import csv
+    import librosa
+    import soundfile as sf
+    import numpy as np
 except ImportError as e:
     print(f"❌ Missing required dependencies: {e}")
-    print("Please install: pip install torch torchaudio datasets huggingface_hub")
+    print("Please install: pip install torch torchaudio datasets huggingface_hub librosa soundfile")
     sys.exit(1)
 
 
@@ -54,9 +57,8 @@ except ImportError as e:
 
 def authenticate_huggingface(hf_token: Optional[str] = None) -> None:
     """Authenticate with Hugging Face Hub using programmatic login."""
-    # Use hardcoded token first, then fallback to others
-    hardcoded_token = "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"
-    token = hardcoded_token  # Always use our hardcoded token
+    # Use token from parameter or environment variable
+    token = hf_token or os.environ.get("HUGGINGFACE_TOKEN")
     if token:
         try:
             login(token=token)
@@ -86,8 +88,8 @@ def load_thai_transcripts(hf_token: Optional[str] = None) -> Dict[str, str]:
     """Load Thai transcripts from TSV file."""
     try:
         # Always use hardcoded token
-        hardcoded_token = "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"
-        token = hardcoded_token
+        # Token removed for security - set HUGGINGFACE_TOKEN environment variable
+        token = hf_token or os.environ.get("HUGGINGFACE_TOKEN")
         
         # Download the Thai transcript file
         tsv_path = hf_hub_download(
@@ -196,18 +198,27 @@ def prepare_thai_data(
     print("📥 Loading Thai GigaSpeech2 dataset in streaming mode...")
     try:
         # Always use hardcoded token
-        hardcoded_token = "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"
-        token = hardcoded_token
+        # Token removed for security - set HUGGINGFACE_TOKEN environment variable
+        token = hf_token or os.environ.get("HUGGINGFACE_TOKEN")
         
         # Ensure we're authenticated before loading dataset
         login(token=token)
+        
+        # Load dataset without audio processing to avoid torchcodec
+        from datasets import Features, Value
+        custom_features = Features({
+            '__key__': Value('string'),
+            '__url__': Value('string'),
+            'wav': {'path': Value('string'), 'bytes': Value('binary')},
+        })
         
         dataset = load_dataset(
             "speechcolab/gigaspeech2",
             data_files={'train': 'data/th/train/*.tar.gz'},
             split='train',
             streaming=True,
-            token=token
+            token=token,
+            features=custom_features
         )
         print(f"✅ Dataset loaded: {dataset}")
     except Exception as e:
@@ -230,41 +241,73 @@ def prepare_thai_data(
             if not audio_data or not transcript:
                 continue
                 
-            # Convert audio array to tensor
-            if 'array' in audio_data and audio_data['array'] is not None:
-                wav = torch.tensor(audio_data['array'], dtype=torch.float32)
-                sr = audio_data.get('sampling_rate', 16000)
+            # Use librosa to load audio from bytes (bypass torchcodec completely)
+            wav = None
+            sr = 16000
+            
+            # Try to get audio from 'bytes' field using librosa
+            if 'bytes' in audio_data and audio_data['bytes']:
+                try:
+                    import io
+                    # Use librosa to load from bytes
+                    audio_array, sr = librosa.load(io.BytesIO(audio_data['bytes']), sr=None)
+                    wav = torch.tensor(audio_array, dtype=torch.float32)
+                except Exception as e:
+                    print(f"⚠️ Failed to load audio from bytes with librosa: {e}")
+                    continue
+            
+            # Try to get audio from 'path' field with librosa
+            elif 'path' in audio_data and audio_data['path']:
+                try:
+                    audio_array, sr = librosa.load(audio_data['path'], sr=None)
+                    wav = torch.tensor(audio_array, dtype=torch.float32)
+                except Exception as e:
+                    print(f"⚠️ Failed to load audio from path with librosa: {e}")
+                    continue
+            
+            # Try direct array if available
+            elif 'array' in audio_data and audio_data['array'] is not None:
+                try:
+                    wav = torch.tensor(audio_data['array'], dtype=torch.float32)
+                    sr = audio_data.get('sampling_rate', 16000)
+                except Exception as e:
+                    print(f"⚠️ Failed to convert audio array: {e}")
+                    continue
+            
+            if wav is None:
+                print(f"⚠️ No valid audio data found in sample")
+                continue
                 
-                # Handle multi-channel audio
-                if wav.dim() == 2 and wav.size(0) > 1:
-                    wav = wav.mean(dim=0)
-                elif wav.dim() == 2:
-                    wav = wav.squeeze(0)
+            # Handle multi-channel audio
+            if wav.dim() == 2 and wav.size(0) > 1:
+                wav = wav.mean(dim=0)
+            elif wav.dim() == 2:
+                wav = wav.squeeze(0)
                     
-                # Resample if needed
-                if resample_to and resample_to != sr:
-                    wav = torchaudio.functional.resample(wav.unsqueeze(0), sr, resample_to).squeeze(0)
-                    sr = resample_to
+            # Resample if needed
+            if resample_to and resample_to != sr:
+                wav = torchaudio.functional.resample(wav.unsqueeze(0), sr, resample_to).squeeze(0)
+                sr = resample_to
                 
-                # Save files
-                base = f"th_gs2_{count:06d}"
-                wav_path = dest / f"{base}.wav"
-                txt_path = dest / f"{base}.txt"
+            # Save files
+            base = f"th_gs2_{count:06d}"
+            wav_path = dest / f"{base}.wav"
+            txt_path = dest / f"{base}.txt"
+            
+            save_wav_tensor(wav, sr, wav_path)
+            txt_path.write_text(transcript.strip() + "\n", encoding="utf-8")
                 
-                save_wav_tensor(wav, sr, wav_path)
-                txt_path.write_text(transcript.strip() + "\n", encoding="utf-8")
+            # Track file sizes for target size limit
+            if target_size_bytes:
+                total_size_bytes += wav_path.stat().st_size + txt_path.stat().st_size
+                if total_size_bytes >= target_size_bytes:
+                    print(f"📊 Reached target size of {target_size_gb:.1f}GB, stopping...")
+                    break
                 
-                # Track file sizes for target size limit
-                if target_size_bytes:
-                    total_size_bytes += wav_path.stat().st_size + txt_path.stat().st_size
-                    if total_size_bytes >= target_size_bytes:
-                        print(f"📊 Reached target size of {target_size_gb:.1f}GB, stopping...")
-                        break
-                
-                count += 1
-                if count % 100 == 0:
-                    size_mb = total_size_bytes / (1024**2) if target_size_bytes else 0
-                    print(f"📈 Processed {count} samples" + (f" ({size_mb:.1f}MB)" if target_size_bytes else ""))
+            count += 1
+            if count % 100 == 0:
+                size_mb = total_size_bytes / (1024**2) if target_size_bytes else 0
+                print(f"📈 Processed {count} samples" + (f" ({size_mb:.1f}MB)" if target_size_bytes else ""))
                     
         except Exception as e:
             print(f"⚠️ Error processing sample {count}: {e}")
@@ -369,8 +412,8 @@ def test_thai_setup(hf_token: Optional[str] = None, max_samples: int = 5) -> Non
     print("\n3. Testing dataset streaming...")
     try:
         # Always use hardcoded token
-        hardcoded_token = "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"
-        token = hardcoded_token
+        # Token removed for security - set HUGGINGFACE_TOKEN environment variable
+        token = hf_token or os.environ.get("HUGGINGFACE_TOKEN")
         
         # Ensure we're authenticated before loading dataset
         login(token=token)
