@@ -364,7 +364,7 @@ class HiggsAudioModelClient:
         return concat_wv, sr, text_result
 
 
-def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_message, audio_tokenizer, speaker_tags):
+def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_message, audio_tokenizer, speaker_tags, ref_audio_dir=f"{CURR_DIR}/voice_prompts"):
     """Prepare the context for generation.
 
     The context contains the system message, user message, assistant message, and audio prompt if any.
@@ -383,7 +383,7 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
             for spk_id, character_name in enumerate(speaker_info_l):
                 if character_name.startswith("profile:"):
                     if voice_profile is None:
-                        with open(f"{CURR_DIR}/voice_prompts/profile.yaml", "r", encoding="utf-8") as f:
+                        with open(os.path.join(ref_audio_dir, "profile.yaml"), "r", encoding="utf-8") as f:
                             voice_profile = yaml.safe_load(f)
                     character_desc = voice_profile["profiles"][character_name[len("profile:") :].strip()]
                     speaker_desc.append(f"SPEAKER{spk_id}: {character_desc}")
@@ -412,8 +412,8 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
         voice_profile = None
         for spk_id, character_name in enumerate(ref_audio.split(",")):
             if not character_name.startswith("profile:"):
-                prompt_audio_path = os.path.join(f"{CURR_DIR}/voice_prompts", f"{character_name}.wav")
-                prompt_text_path = os.path.join(f"{CURR_DIR}/voice_prompts", f"{character_name}.txt")
+                prompt_audio_path = os.path.join(ref_audio_dir, f"{character_name}.wav")
+                prompt_text_path = os.path.join(ref_audio_dir, f"{character_name}.txt")
                 assert os.path.exists(prompt_audio_path), (
                     f"Voice prompt audio file {prompt_audio_path} does not exist."
                 )
@@ -550,6 +550,24 @@ def prepare_generation_context(scene_prompt, ref_audio, ref_audio_in_system_mess
     show_default=True,
 )
 @click.option(
+    "--ref_audio_dir",
+    type=str,
+    default=f"{CURR_DIR}/voice_prompts",
+    help="Directory that contains named reference prompts (name.wav and name.txt). Works with --ref_audio names.",
+)
+@click.option(
+    "--ref_audio_file",
+    type=str,
+    default=None,
+    help="Path to a reference speaker audio file (e.g., WAV). If provided, we will use this file directly instead of looking up names in examples/voice_prompts.",
+)
+@click.option(
+    "--ref_text_file",
+    type=str,
+    default=None,
+    help="Path to the transcript text that the reference speaker reads in the reference audio. If not provided, we will look for a .txt next to the audio file with the same stem.",
+)
+@click.option(
     "--chunk_method",
     default=None,
     type=click.Choice([None, "speaker", "word"]),
@@ -609,6 +627,9 @@ def main(
     ras_win_max_num_repeat,
     ref_audio,
     ref_audio_in_system_message,
+    ref_audio_dir,
+    ref_audio_file,
+    ref_text_file,
     chunk_method,
     chunk_max_word_num,
     chunk_max_num_turns,
@@ -680,13 +701,66 @@ def main(
     if not any([transcript.endswith(c) for c in [".", "!", "?", ",", ";", '"', "'", "</SE_e>", "</SE>"]]):
         transcript += "."
 
-    messages, audio_ids = prepare_generation_context(
-        scene_prompt=scene_prompt,
-        ref_audio=ref_audio,
-        ref_audio_in_system_message=ref_audio_in_system_message,
-        audio_tokenizer=audio_tokenizer,
-        speaker_tags=speaker_tags,
-    )
+    # Build messages/audio_ids either from named prompts, or direct file paths
+    if ref_audio_file is not None:
+        if not os.path.exists(ref_audio_file):
+            raise FileNotFoundError(f"Reference audio file not found: {ref_audio_file}")
+        # Determine reference transcript file
+        if ref_text_file is None:
+            base, _ = os.path.splitext(ref_audio_file)
+            inferred_txt = base + ".txt"
+            if os.path.exists(inferred_txt):
+                ref_text_file = inferred_txt
+            else:
+                raise FileNotFoundError(
+                    "Reference text file not provided and could not infer '<audio_stem>.txt' next to the audio file. "
+                    f"Please pass --ref_text_file explicitly. Missing: {inferred_txt}"
+                )
+
+        with open(ref_text_file, "r", encoding="utf-8") as f:
+            prompt_text = f.read().strip()
+
+        # Tokenize reference audio for conditioning
+        audio_tokens = audio_tokenizer.encode(ref_audio_file)
+        audio_ids = [audio_tokens]
+
+        messages = []
+        if scene_prompt:
+            messages.append(
+                Message(
+                    role="system",
+                    content=f"Generate audio following instruction.\n\n<|scene_desc_start|>\n{scene_prompt}\n<|scene_desc_end|>",
+                )
+            )
+
+        if ref_audio_in_system_message:
+            # Put an audio placeholder into the system message contents
+            system_message = (
+                "Generate audio following instruction.\n\n"
+                + f"<|scene_desc_start|>\n" + (scene_prompt or "") + "\n"
+                + f"SPEAKER0: {AUDIO_PLACEHOLDER_TOKEN}\n<|scene_desc_end|>"
+            )
+            # Replace last system message if exists, else insert
+            sys_msg = _build_system_message_with_audio_prompt(system_message)
+            if messages and messages[0].role == "system":
+                messages[0] = sys_msg
+            else:
+                messages.insert(0, sys_msg)
+        else:
+            # Provide (text, audio) reference in dialogue turns
+            messages.append(Message(role="user", content=prompt_text))
+            messages.append(
+                Message(role="assistant", content=AudioContent(audio_url=ref_audio_file))
+            )
+    else:
+        messages, audio_ids = prepare_generation_context(
+            scene_prompt=scene_prompt,
+            ref_audio=ref_audio,
+            ref_audio_in_system_message=ref_audio_in_system_message,
+            audio_tokenizer=audio_tokenizer,
+            speaker_tags=speaker_tags,
+            ref_audio_dir=ref_audio_dir,
+        )
     chunked_text = prepare_chunk_text(
         transcript,
         chunk_method=chunk_method,

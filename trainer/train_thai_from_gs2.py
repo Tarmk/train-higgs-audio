@@ -10,6 +10,7 @@ def main():
     parser.add_argument("--work_dir", type=str, default="./thai_run", help="Working directory")
     parser.add_argument("--split", type=str, default="train_refined", choices=["train_refined", "train_raw"], help="GigaSpeech2 Thai split")
     parser.add_argument("--max_samples", type=int, default=5000, help="Max samples to prepare for a quick run")
+    parser.add_argument("--target_size_gb", type=float, default=None, help="Approximate target size in GB for prepared data (stop when reached)")
     parser.add_argument("--resample_to", type=int, default=16000)
     parser.add_argument("--hf_token", type=str, default=None, help="HF token or set HUGGINGFACE_TOKEN env var")
     parser.add_argument("--epochs", type=int, default=1)
@@ -24,14 +25,16 @@ def main():
     out_dir = work / "output"
     work.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Prepare Thai data
+    # Step 1: Prepare Thai data using notebook-style approach
     prep_cmd = (
         f"python tools/prepare_gigaspeech2_thai.py "
         f"--output_dir {data_dir} "
         f"--split {args.split} "
         f"--max_samples {args.max_samples} "
-        f"--resample_to {args.resample_to} "
+        + (f"--target_size_gb {args.target_size_gb} " if args.target_size_gb else "")
+        + f"--resample_to {args.resample_to} "
         + (f"--hf_token {args.hf_token} " if args.hf_token else "")
+        + "--streaming "  # Enable streaming mode for large datasets
     )
     print("Preparing data:", prep_cmd)
     if os.system(prep_cmd) != 0:
