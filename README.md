@@ -7,6 +7,15 @@
   <a href="https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base"><img src="https://img.shields.io/badge/🤗-Checkpoints (3.6B LLM + 2.2B audio adapter)-ED5A22.svg" style="margin-right: 5px;"></a>
 </div>
 
+> **This fork adds Thai.** It extends [JimmyMa99/train-higgs-audio](https://github.com/JimmyMa99/train-higgs-audio) with a Thai speech pipeline:
+>
+> - `tools/prepare_gigaspeech2_thai.py`, `run_thai_complete.py`, `thai_data_simple.py`: stream Thai audio from GigaSpeech2 (with its refined transcripts) or Common Voice, resample it and write audio/transcript training pairs.
+> - `trainer/run_thai_lora.py`, `trainer/train_thai_from_gs2.py`: LoRA fine-tuning of Higgs Audio v2 on the prepared data.
+> - `trainer/trainer.py`: transcript normalisation keeps Thai characters.
+>
+> GigaSpeech2 is gated, so set `HUGGINGFACE_TOKEN` in the environment before preparing data. Never put the token in a file in the repo.
+
+
 # Training repo for Higgs Audio v2  
 
 # Data Processing and Training Guide  
